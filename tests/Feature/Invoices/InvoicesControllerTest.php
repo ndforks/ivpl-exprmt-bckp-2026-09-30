@@ -170,6 +170,27 @@ class InvoicesControllerTest extends AbstractTestCase
         $this->assertDatabaseHas('ip_invoices', ['invoice_id' => $invoiceId, 'invoice_number' => 'INV-CSRF-KEPT']);
     }
 
+    #[Test]
+    public function it_deletes_an_invoice_when_csrf_protection_is_enabled_and_token_was_consumed_by_ci3(): void
+    {
+        /* Arrange */
+        $this->enableCsrfProtection();
+        $invoiceId = $this->seedInvoice($this->seedClient(), ['invoice_status_id' => 1]);
+
+        /* Simulate real form submission: CI3's bootstrap has already consumed the token
+           from $_POST (leaving it null), but the request passed CI3's security check */
+        $response = $this->post(
+            '/invoices/delete/' . $invoiceId,
+            [], // No explicit token - CI3 already consumed it
+            [],
+            ['ip_csrf_cookie' => 'issue-1694-csrf-token-0123456789']
+        );
+
+        /* Assert */
+        self::assertTrue($response->isRedirect(), 'Delete should redirect after CI3 consumed the CSRF token.');
+        $this->assertDatabaseMissing('ip_invoices', ['invoice_id' => $invoiceId]);
+    }
+
     // -------------------------------------------------------------------------
     // Invoice tax rates — Invoices::delete_invoice_tax (#1694 regression)
     // -------------------------------------------------------------------------

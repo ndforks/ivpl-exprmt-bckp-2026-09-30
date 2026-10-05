@@ -78,6 +78,49 @@ XML);
         self::assertSame(3.0, $invoice['items'][0]['quantity']);
     }
 
+    #[Test]
+    public function it_handles_malformed_xml_gracefully(): void
+    {
+        /* Arrange */
+        $path = $this->writeDocument('<?xml version="1.0"?><Root><Unclosed>');
+
+        /* Act */
+        $result = @(new SupplierInvoiceDocumentParser())->parse($path);
+
+        /* Assert */
+        self::assertIsArray($result);
+        self::assertArrayHasKey('supplier', $result);
+        self::assertArrayHasKey('invoice', $result);
+        self::assertArrayHasKey('items', $result);
+    }
+
+    #[Test]
+    public function it_handles_missing_invoice_number(): void
+    {
+        /* Arrange */
+        $path = $this->writeDocument(<<<'XML'
+<CrossIndustryInvoice xmlns="urn:example">
+  <ExchangedDocument><IssueDateTime><DateTimeString format="102">20261004</DateTimeString></IssueDateTime></ExchangedDocument>
+  <SupplyChainTradeTransaction>
+    <IncludedSupplyChainTradeLineItem>
+      <SpecifiedTradeProduct><Name>Item</Name></SpecifiedTradeProduct>
+      <SpecifiedLineTradeAgreement><NetPriceProductTradePrice><ChargeAmount>100</ChargeAmount></NetPriceProductTradePrice></SpecifiedLineTradeAgreement>
+      <SpecifiedLineTradeDelivery><BilledQuantity>1</BilledQuantity></SpecifiedLineTradeDelivery>
+    </IncludedSupplyChainTradeLineItem>
+    <ApplicableHeaderTradeAgreement><SellerTradeParty><Name>Supplier</Name></SellerTradeParty></ApplicableHeaderTradeAgreement>
+    <ApplicableHeaderTradeSettlement><InvoiceCurrencyCode>EUR</InvoiceCurrencyCode><SpecifiedTradeSettlementHeaderMonetarySummation><TaxBasisTotalAmount>100</TaxBasisTotalAmount><TaxTotalAmount>0</TaxTotalAmount><GrandTotalAmount>100</GrandTotalAmount></SpecifiedTradeSettlementHeaderMonetarySummation></ApplicableHeaderTradeSettlement>
+  </SupplyChainTradeTransaction>
+</CrossIndustryInvoice>
+XML);
+
+        /* Act */
+        $invoice = (new SupplierInvoiceDocumentParser())->parse($path);
+
+        /* Assert */
+        self::assertSame('', $invoice['invoice']['supplier_invoice_number']);
+        self::assertSame(100.0, $invoice['invoice']['total']);
+    }
+
     private function writeDocument(string $contents): string
     {
         $path = tempnam(sys_get_temp_dir(), 'ip-parser-test-');

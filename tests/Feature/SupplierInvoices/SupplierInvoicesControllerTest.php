@@ -108,6 +108,74 @@ final class SupplierInvoicesControllerTest extends AbstractTestCase
         $this->assertResponseRedirectsToRoute($response, 'sessions/login');
     }
 
+    #[Test]
+    public function it_prevents_partial_payment_overpayment(): void
+    {
+        /* Arrange */
+        $supplierId = $this->seedSupplier('Overpayment Test');
+        $invoiceId = $this->seedSupplierInvoice($supplierId, 'OVR-001', '100.00');
+        $this->enableCsrfProtection();
+
+        /* Act */
+        $response = $this->postWithValidCsrfToken('/supplier_invoices/payment/' . $invoiceId, [
+            'payment_date' => '2026-10-04',
+            'amount' => '150.00',
+            'payment_method' => 'Bank transfer',
+            'reference' => 'PAYMENT-OVR-001',
+        ]);
+
+        /* Assert */
+        $paid = $this->databaseFetchOne('ip_supplier_invoices', ['supplier_invoice_id' => $invoiceId]);
+        self::assertTrue((float)$paid['amount_paid'] <= 100.0);
+    }
+
+    #[Test]
+    public function it_records_partial_payment_correctly(): void
+    {
+        /* Arrange */
+        $supplierId = $this->seedSupplier('Partial Payment Supplier');
+        $invoiceId = $this->seedSupplierInvoice($supplierId, 'PART-001', '100.00');
+        $this->enableCsrfProtection();
+
+        /* Act */
+        $response = $this->postWithValidCsrfToken('/supplier_invoices/payment/' . $invoiceId, [
+            'payment_date' => '2026-10-04',
+            'amount' => '50.00',
+            'payment_method' => 'Bank transfer',
+            'reference' => 'PAYMENT-PART-001',
+        ]);
+
+        /* Assert */
+        $this->assertResponseRedirectsToRoute($response, 'supplier_invoices/view/' . $invoiceId);
+        $this->assertDatabaseHas('ip_supplier_invoices', [
+            'supplier_invoice_id' => $invoiceId,
+            'amount_paid' => '50.000000',
+            'status' => 'partial',
+        ]);
+    }
+
+    #[Test]
+    public function it_validates_payment_date(): void
+    {
+        /* Arrange */
+        $supplierId = $this->seedSupplier('Date Validation Supplier');
+        $invoiceId = $this->seedSupplierInvoice($supplierId, 'DATE-001', '100.00');
+        $this->enableCsrfProtection();
+
+        /* Act */
+        $response = $this->postWithValidCsrfToken('/supplier_invoices/payment/' . $invoiceId, [
+            'payment_date' => 'invalid-date',
+            'amount' => '100.00',
+            'payment_method' => 'Bank transfer',
+            'reference' => 'PAYMENT-DATE-001',
+        ]);
+
+        /* Assert */
+        $this->assertResponseRedirectsToRoute($response, 'supplier_invoices/view/' . $invoiceId);
+        $unpaid = $this->databaseFetchOne('ip_supplier_invoices', ['supplier_invoice_id' => $invoiceId]);
+        self::assertSame('0.000000', $unpaid['amount_paid']);
+    }
+
     private function seedSupplier(string $name): int
     {
         return $this->databaseInsert('ip_suppliers', [

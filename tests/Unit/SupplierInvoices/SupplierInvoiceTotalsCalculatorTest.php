@@ -49,4 +49,55 @@ final class SupplierInvoiceTotalsCalculatorTest extends TestCase
         self::assertSame(0.2, $result['tax_total']);
         self::assertSame(1.2, $result['total']);
     }
+
+    #[Test]
+    public function it_handles_zero_tax_rate(): void
+    {
+        /* Arrange */
+        $lines = [
+            ['item_name' => 'Untaxed Item', 'quantity' => 2, 'unit_price' => '50.00', 'tax_rate' => 0],
+        ];
+
+        /* Act */
+        $result = (new SupplierInvoiceTotalsCalculator())->calculate($lines);
+
+        /* Assert */
+        self::assertSame(100.0, $result['subtotal']);
+        self::assertSame(0.0, $result['tax_total']);
+        self::assertSame(100.0, $result['total']);
+    }
+
+    #[Test]
+    public function it_handles_high_tax_rate(): void
+    {
+        /* Arrange */
+        $lines = [
+            ['item_name' => 'High Tax', 'quantity' => 1, 'unit_price' => '100', 'tax_rate' => 50],
+        ];
+
+        /* Act */
+        $result = (new SupplierInvoiceTotalsCalculator())->calculate($lines);
+
+        /* Assert */
+        self::assertSame(100.0, $result['subtotal']);
+        self::assertSame(50.0, $result['tax_total']);
+        self::assertSame(150.0, $result['total']);
+    }
+
+    #[Test]
+    public function it_calculates_with_fractional_quantities(): void
+    {
+        /* Arrange */
+        $lines = [
+            ['item_name' => 'Fractional', 'quantity' => '0.5', 'unit_price' => '100', 'tax_rate' => 10],
+        ];
+
+        /* Act */
+        $result = (new SupplierInvoiceTotalsCalculator())->calculate($lines);
+
+        /* Assert */
+        self::assertSame(50.0, $result['subtotal']);
+        self::assertSame(5.0, $result['tax_total']);
+        self::assertSame(55.0, $result['total']);
+    }
 }

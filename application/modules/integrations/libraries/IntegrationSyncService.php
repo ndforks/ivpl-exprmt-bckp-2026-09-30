@@ -51,7 +51,7 @@ final class IntegrationSyncService
     public function run(int $merchantClientId, string $trigger = 'manual', string $scope = 'all'): array
     {
         if ( ! in_array($trigger, ['manual', 'api', 'cron'], true)
-            || ! in_array($scope, ['all', 'incoming', 'events'], true)) {
+            || ! in_array($scope, ['all', 'incoming', 'statuses', 'events'], true)) {
             throw new InvalidArgumentException('Invalid integration synchronization mode.');
         }
 
@@ -115,8 +115,12 @@ final class IntegrationSyncService
                         $driver,
                         $items,
                         $this->responses,
-                        $this->archiveDirectory
+                        $this->archiveDirectory,
+                        $this->supplierInvoiceImporter()
                     );
+                    foreach ($result['incoming']['errors'] as $error) {
+                        $result['errors'][] = $error;
+                    }
                     $successfulPhases++;
                 } catch (Throwable $e) {
                     if ($phaseAttempts === 0) {
@@ -126,7 +130,50 @@ final class IntegrationSyncService
                 }
             }
 
-            if ($scope !== 'incoming') {
+            if ($scope !== 'incoming' && $scope !== 'events') {
+                $phaseAttempts = 0;
+                try {
+                    $statusCandidates = $this->responses->get_status_candidates($merchantClientId);
+
+                    foreach ($statusCandidates as $candidate) {
+                        $reference = (string) ($candidate['merchant_response_reference'] ?? '');
+
+                        try {
+                            $operation = $this->retry->execute(
+                                fn (): array => $client->getInvoiceStatus($reference)
+                            );
+                            $phaseAttempts += $operation['attempts'];
+                            $result['attempts'] += $operation['attempts'];
+                            $this->responses->save_status(
+                                (int) $candidate['invoice_id'],
+                                $operation['response'],
+                                $driver,
+                                $candidate
+                            );
+                            $result['statuses']['updated']++;
+                        } catch (Throwable $e) {
+                            $attempts = $this->retry->lastAttempts();
+                            $phaseAttempts += $attempts;
+                            $result['attempts'] += $attempts;
+                            $result['statuses']['failed']++;
+                            $result['errors'][] = $this->safeError(
+                                'Invoice status synchronization failed for reference '
+                                    . (IntegrationPayloadSanitizer::text($reference, 100) ?? 'unknown'),
+                                $e
+                            );
+                        }
+                    }
+
+                    $successfulPhases++;
+                } catch (Throwable $e) {
+                    if ($phaseAttempts === 0) {
+                        $result['attempts'] += $this->retry->lastAttempts();
+                    }
+                    $result['errors'][] = $this->safeError('Status synchronization failed', $e);
+                }
+            }
+
+            if ($scope !== 'incoming' && $scope !== 'statuses') {
                 $phaseAttempts = 0;
                 try {
                     $operation     = $this->retry->execute(fn (): array => $client->getInvoiceEvents());
@@ -163,12 +210,15 @@ final class IntegrationSyncService
                 }
             }
 
-            $expectedPhases   = $scope === 'all' ? 2 : 1;
-            $documentFailures = $result['incoming']['failed'] > 0;
+            $expectedPhases   = $scope === 'all' ? 3 : 1;
+            $documentFailures = $result['incoming']['failed'] > 0
+                || $result['incoming']['supplier_import_failed'] > 0;
             $result['status'] = match (true) {
-                $successfulPhases === 0                                  => 'failed',
-                $successfulPhases < $expectedPhases || $documentFailures => 'partial',
-                default                                                  => 'success',
+                $successfulPhases === 0                                      => 'failed',
+                $successfulPhases < $expectedPhases
+                    || $documentFailures
+                    || $result['statuses']['failed'] > 0                     => 'partial',
+                default                                                      => 'success',
             };
         } catch (Throwable $e) {
             $result['status']   = 'failed';
@@ -200,7 +250,15 @@ final class IntegrationSyncService
             'scope'          => $scope,
             'status'         => 'running',
             'attempts'       => 0,
-            'incoming'       => ['received' => 0, 'archived' => 0, 'skipped' => 0, 'failed' => 0],
+            'incoming'       => [
+                'received' => 0,
+                'archived' => 0,
+                'skipped' => 0,
+                'failed' => 0,
+                'supplier_imported' => 0,
+                'supplier_import_failed' => 0,
+            ],
+            'statuses'       => ['updated' => 0, 'failed' => 0],
             'events'         => ['received' => 0, 'created' => 0, 'skipped' => 0],
             'errors'         => [],
         ];
@@ -212,6 +270,16 @@ final class IntegrationSyncService
             IntegrationPayloadSanitizer::text($error->getMessage(), 500)
                 ?? 'unknown error'
         );
+    }
+
+    private function supplierInvoiceImporter(): Closure
+    {
+        return static function (int $responseId): int {
+            $codeIgniter = get_instance();
+            $codeIgniter->load->model('supplier_invoices/Mdl_supplier_invoices');
+
+            return $codeIgniter->Mdl_supplier_invoices->import_from_incoming_response($responseId);
+        };
     }
 
     private function durationMilliseconds(int $startedAt): int

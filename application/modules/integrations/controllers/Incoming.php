@@ -13,6 +13,7 @@ class Incoming extends Admin_Controller
         $this->load->model('integrations/Merchant_clients_model');
         $this->load->model('integrations/Merchant_responses_model');
         $this->load->model('integrations/Integration_sync_runs_model');
+        $this->load->model('supplier_invoices/Mdl_supplier_invoices');
 
         require_once APPPATH . 'modules/integrations/libraries/IntegrationClientInterface.php';
         require_once APPPATH . 'modules/integrations/libraries/IntegrationClientRegistry.php';
@@ -53,10 +54,18 @@ class Incoming extends Admin_Controller
             'clients'    => $this->Merchant_clients_model->get_enabled_clients(),
             'incoming'   => $this->Merchant_responses_model->get_incoming(),
             'client_map' => $client_map,
+            'supplier_invoices' => $this->Mdl_supplier_invoices->get_by_incoming_response_ids(),
         ]);
 
         $this->layout->buffer('content', 'integrations/incoming');
         $this->layout->render();
+    }
+
+    public function accounting(): void
+    {
+        // Keep the historical URL working while the supplier invoice module
+        // becomes the single canonical register.
+        redirect('supplier_invoices');
     }
 
     public function sync($merchant_client_id)
@@ -79,7 +88,7 @@ class Incoming extends Admin_Controller
             $result = $this->syncService()->run((int) $merchant_client_id, 'manual', 'incoming');
         } catch (Throwable $e) {
             log_message('error', 'Incoming e-invoice sync failed: ' . sanitize_for_logging($e->getMessage()));
-            $this->session->set_flashdata('alert_error', 'Provider request failed.');
+            $this->session->set_flashdata('alert_error', trans('provider_request_failed'));
             redirect('integrations/incoming');
 
             return;
@@ -88,8 +97,9 @@ class Incoming extends Admin_Controller
         $this->session->set_flashdata(
             $result['status'] === 'success' ? 'alert_success' : 'alert_error',
             sprintf(
-                '%d incoming invoice(s) archived; %d already present; %d rejected. Run %s (%s).',
+                trans('incoming_sync_summary'),
                 $result['incoming']['archived'],
+                $result['incoming']['supplier_imported'],
                 $result['incoming']['skipped'],
                 $result['incoming']['failed'],
                 $result['correlation_id'],
@@ -97,6 +107,47 @@ class Incoming extends Admin_Controller
             )
         );
         redirect('integrations/incoming');
+    }
+
+    public function create_supplier_invoice($responseId): void
+    {
+        if ($this->input->method() !== 'post') {
+            show_error('Method not allowed', 405);
+
+            return;
+        }
+
+        try {
+            $this->Mdl_supplier_invoices->import_from_incoming_response((int) $responseId);
+            $this->session->set_flashdata('alert_success', trans('supplier_invoice_imported'));
+        } catch (Throwable $e) {
+            log_message('error', 'Supplier invoice import failed: ' . sanitize_for_logging($e->getMessage()));
+            $this->session->set_flashdata('alert_error', trans('unable_to_add_supplier_invoice'));
+        }
+
+        redirect('integrations/incoming');
+    }
+
+    public function update_supplier_invoice_status($supplierInvoiceId): void
+    {
+        if ($this->input->method() !== 'post') {
+            show_error('Method not allowed', 405);
+
+            return;
+        }
+
+        try {
+            $status = trim((string) $this->input->post('status'));
+            $this->Mdl_supplier_invoices->update_status((int) $supplierInvoiceId, $status);
+            $this->session->set_flashdata('alert_success', trans('supplier_invoice_status_updated'));
+        } catch (Throwable $e) {
+            log_message('error', 'Supplier invoice status update failed: ' . sanitize_for_logging($e->getMessage()));
+            $this->session->set_flashdata('alert_error', trans('unable_to_update_supplier_invoice_status'));
+        }
+
+        // The old status endpoint remains available for bookmarked forms, but
+        // the user continues in the canonical supplier invoice module.
+        redirect('supplier_invoices/view/' . (int) $supplierInvoiceId);
     }
 
     public function download($responseId): void
@@ -140,7 +191,7 @@ class Incoming extends Admin_Controller
             ->set_header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0')
             ->set_header('Pragma: no-cache')
             ->set_header('X-Content-Type-Options: nosniff')
-            ->set_header('Content-Length: ' . mb_strlen($content, '8bit'))
+            ->set_header('Content-Length: ' . strlen($content))
             ->set_content_type($mimeType)
             ->set_header('Content-Disposition: attachment; filename="' . $filename . '"')
             ->set_output($content);

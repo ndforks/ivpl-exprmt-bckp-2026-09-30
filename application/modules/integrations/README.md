@@ -92,10 +92,10 @@ After submission, the module can query the provider to retrieve invoice processi
 * Paid
 * Any additional status exposed by the provider
 
-Status information is stored in:
+Status information is stored in the unified provider response history:
 
 ```sql
-ip_einvoice_responses
+ip_merchant_responses
 ```
 
 ---
@@ -131,6 +131,51 @@ allows the system to:
 * Connect to a PDP
 * Retrieve supplier invoices
 * Store incoming invoice data locally
+
+Validated incoming documents can be added to the supplier accounting register
+from the Incoming Invoices page. The register keeps the supplier identity,
+invoice reference, document link, and workflow status (`received`, `approved`,
+`paid`, or `rejected`). It is intentionally separate from `ip_invoices`, which
+contains sales invoices issued by InvoicePlane.
+
+When a validated Factur-X/CII or UBL document is added, the supplier invoice
+module also extracts the supplier identity, invoice number, issue and due
+dates, currency, VAT totals, invoice totals, and structured invoice lines. The
+original archived document remains linked to the imported record. Documents
+whose structured content cannot be read are rejected instead of being imported
+with misleading totals.
+
+For manually entered invoices, the supplier invoice form recalculates each line
+subtotal, VAT amount, and total on the server from quantity, unit price, and
+VAT rate. The browser preview is only a convenience and is not trusted for
+persisting monetary values.
+
+The `Add to accounting` action on the PDP incoming-invoices page now calls the
+supplier invoice module directly. The import remains idempotent through the
+unique `incoming_response_id` link, so retrying the action does not create a
+second supplier invoice.
+
+The supplier invoice module is now the canonical register. The historical
+`/integrations/incoming/accounting` URL remains as a compatibility redirect to
+`/supplier_invoices`, and the legacy status endpoint redirects to the supplier
+invoice detail page after processing existing bookmarked forms. The duplicate
+integration register view is no longer part of the active navigation and can
+be removed after downstream integrations have migrated.
+
+Manual supplier invoice creation also checks the supplier/number combination.
+The same rule is enforced by the `uq_supplier_invoice_supplier_number`
+database constraint, while allowing identical invoice numbers for different
+suppliers.
+
+Supplier invoices are archived reversibly rather than physically deleted. The
+archive keeps the original document, attachments, payments, and status history;
+archived records are hidden from the active list and can be restored through
+the supplier invoice detail page.
+
+The supplier invoice module is restricted to administrator accounts (`user_type
+1`). This applies to reading invoices and documents, editing data, recording
+payments, uploading attachments, and archiving/restoring records. All state-
+changing actions require POST and a valid CSRF token.
 
 ---
 

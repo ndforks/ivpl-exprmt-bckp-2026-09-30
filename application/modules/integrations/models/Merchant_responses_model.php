@@ -62,8 +62,12 @@ class Merchant_responses_model extends CI_Model
             'record_type'                  => MerchantResponseType::OutboundStatus->value,
             'status'                       => $status->value,
             'http_code'                    => $providerResponse['http_code'] ?? null,
-            'error_code'                   => $errorCode,
-            'error_detail'                 => IntegrationPayloadSanitizer::text($errorDetail, 500),
+            'error_code'                   => $errorCode
+                ?? IntegrationPayloadSanitizer::text($providerResponse['error_code'] ?? $providerResponse['code'] ?? null, 100),
+            'error_detail'                 => IntegrationPayloadSanitizer::text(
+                $errorDetail ?? (! empty($providerResponse['success']) ? null : $providerResponse['message'] ?? null),
+                500
+            ),
             'created_at'                   => date('Y-m-d H:i:s'),
             'raw_payload'                  => IntegrationPayloadSanitizer::json($providerResponse),
         ]);
@@ -120,6 +124,11 @@ class Merchant_responses_model extends CI_Model
             'record_type'                  => MerchantResponseType::OutboundStatus->value,
             'status'                       => $resolvedStatus->value,
             'http_code'                    => $status['http_code'] ?? null,
+            'error_code'                   => IntegrationPayloadSanitizer::text($status['error_code'] ?? $status['code'] ?? null, 100),
+            'error_detail'                 => IntegrationPayloadSanitizer::text(
+                ($resolvedStatus->isSuccessful() === false) ? $status['message'] ?? null : null,
+                500
+            ),
             'created_at'                   => date('Y-m-d H:i:s'),
             'raw_payload'                  => IntegrationPayloadSanitizer::json($status),
         ]);
@@ -180,6 +189,8 @@ class Merchant_responses_model extends CI_Model
             'record_type'                  => MerchantResponseType::IncomingInvoice->value,
             'status'                       => $status->value,
             'http_code'                    => $invoice['http_code'] ?? null,
+            'error_code'                   => IntegrationPayloadSanitizer::text($invoice['error_code'] ?? null, 100),
+            'error_detail'                 => IntegrationPayloadSanitizer::text($invoice['error_detail'] ?? null, 500),
             'peppol_participant_id'        => $peppolParticipantId,
             'peppol_document_type'         => $peppolDocumentType?->value,
             'created_at'                   => date('Y-m-d H:i:s'),
@@ -212,6 +223,21 @@ class Merchant_responses_model extends CI_Model
             ->count_all_results(self::TABLE) > 0;
     }
 
+    public function get_valid_incoming_document_id(int $merchantClientId, string $externalId): ?int
+    {
+        $row = $this->db
+            ->select('merchant_response_id')
+            ->where('merchant_client_id', $merchantClientId)
+            ->where('merchant_response_reference', $externalId)
+            ->where('direction', MerchantResponseDirection::In->value)
+            ->where('record_type', MerchantResponseType::IncomingInvoice->value)
+            ->where('document_validation_status', 'valid')
+            ->get(self::TABLE)
+            ->row_array();
+
+        return $row === [] ? null : (int) $row['merchant_response_id'];
+    }
+
     public function create_event_item(
         int $merchantClientId,
         array $event,
@@ -233,6 +259,26 @@ class Merchant_responses_model extends CI_Model
             return 0;
         }
 
+        $reference = $event['invoice_id'] ?? $event['external_id'] ?? $event['id'] ?? null;
+        $invoiceId = null;
+
+        if (is_scalar($reference) && (string) $reference !== '') {
+            $outbound = $this->db
+                ->select('invoice_id')
+                ->where('merchant_client_id', $merchantClientId)
+                ->where('direction', MerchantResponseDirection::Out->value)
+                ->where('record_type', MerchantResponseType::OutboundStatus->value)
+                ->where('merchant_response_reference', (string) $reference)
+                ->where('invoice_id IS NOT NULL')
+                ->order_by('created_at', 'DESC')
+                ->order_by('merchant_response_id', 'DESC')
+                ->limit(1)
+                ->get(self::TABLE)
+                ->row_array();
+
+            $invoiceId = isset($outbound['invoice_id']) ? (int) $outbound['invoice_id'] : null;
+        }
+
         $message = $event['message']
             ?? $event['reason_message']
             ?? $event['reason']
@@ -242,11 +288,11 @@ class Merchant_responses_model extends CI_Model
             ?? $status->value;
 
         $this->db->insert(self::TABLE, [
-            'invoice_id'                   => null,
+            'invoice_id'                   => $invoiceId,
             'merchant_response_date'       => date('Y-m-d'),
             'merchant_response_driver'     => $driver->value,
             'merchant_response'            => IntegrationPayloadSanitizer::text($message),
-            'merchant_response_reference'  => $event['invoice_id'] ?? $event['external_id'] ?? $event['id'] ?? null,
+            'merchant_response_reference'  => $reference,
             'merchant_response_successful' => $status->isSuccessful(),
             'merchant_client_id'           => $merchantClientId,
             'direction'                    => MerchantResponseDirection::In->value,
@@ -261,6 +307,49 @@ class Merchant_responses_model extends CI_Model
         ]);
 
         return (int) $this->db->insert_id();
+    }
+
+    /**
+     * Return the latest outbound transmission for each invoice that can still
+     * receive a provider status update.
+     */
+    public function get_status_candidates(int $merchantClientId): array
+    {
+        $rows = $this->db
+            ->where('merchant_client_id', $merchantClientId)
+            ->where('direction', MerchantResponseDirection::Out->value)
+            ->where('record_type', MerchantResponseType::OutboundStatus->value)
+            ->where('invoice_id IS NOT NULL')
+            ->where('merchant_response_reference IS NOT NULL')
+            ->where('merchant_response_reference !=', '')
+            ->where_not_in('status', [
+                MerchantResponseStatus::Accepted->value,
+                MerchantResponseStatus::PartiallyAccepted->value,
+                MerchantResponseStatus::Delivered->value,
+                MerchantResponseStatus::Completed->value,
+                MerchantResponseStatus::Refused->value,
+                MerchantResponseStatus::Paid->value,
+                MerchantResponseStatus::Rejected->value,
+                MerchantResponseStatus::Error->value,
+            ])
+            ->order_by('created_at', 'DESC')
+            ->order_by('merchant_response_id', 'DESC')
+            ->get(self::TABLE)
+            ->result_array();
+
+        $latest = [];
+        foreach ($rows as $row) {
+            $invoiceId = (int) ($row['invoice_id'] ?? 0);
+            $reference = (string) ($row['merchant_response_reference'] ?? '');
+
+            if ($invoiceId < 1 || $reference === '' || str_starts_with($reference, 'invoice-')) {
+                continue;
+            }
+
+            $latest[$invoiceId] ??= $row;
+        }
+
+        return array_values($latest);
     }
 
     public function get_incoming(): array
@@ -285,8 +374,9 @@ class Merchant_responses_model extends CI_Model
     public function get_events(): array
     {
         return $this->db
-            ->select(self::TABLE . '.*, ip_merchant_clients.label AS merchant_client_label')
+            ->select(self::TABLE . '.*, ip_merchant_clients.label AS merchant_client_label, ip_invoices.invoice_number')
             ->join('ip_merchant_clients', 'ip_merchant_clients.id = ' . self::TABLE . '.merchant_client_id', 'left')
+            ->join('ip_invoices', 'ip_invoices.invoice_id = ' . self::TABLE . '.invoice_id', 'left')
             ->where('record_type', MerchantResponseType::InvoiceEvent->value)
             ->order_by('created_at', 'DESC')
             ->get(self::TABLE)

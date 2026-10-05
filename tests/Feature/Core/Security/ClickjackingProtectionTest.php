@@ -222,22 +222,10 @@ class ClickjackingProtectionTest extends AbstractTestCase
     // Helpers
     // -------------------------------------------------------------------------
 
-    protected function seedClient(array $overrides = []): object
-    {
-        $id = $this->databaseInsert('ip_clients', array_merge([
-            'client_name'          => 'Seed Client ' . bin2hex(random_bytes(3)),
-            'client_active'        => 1,
-            'client_date_created'  => date('Y-m-d H:i:s'),
-            'client_date_modified' => date('Y-m-d H:i:s'),
-        ], $overrides));
-
-        return (object) ['client_id' => $id];
-    }
-
-    protected function seedInvoice(object $client, array $overrides = []): object
+    protected function seedInvoice(int $clientId, array $overrides = []): object
     {
         $id = $this->databaseInsert('ip_invoices', array_merge([
-            'client_id'             => $client->client_id,
+            'client_id'             => $clientId,
             'invoice_number'        => 'INV-' . bin2hex(random_bytes(3)),
             'invoice_status_id'     => 2,
             'invoice_total'         => '100.00',
@@ -250,11 +238,11 @@ class ClickjackingProtectionTest extends AbstractTestCase
         return (object) ['invoice_id' => $id, 'invoice_url_key' => $overrides['invoice_url_key'] ?? bin2hex(random_bytes(16))];
     }
 
-    protected function seedQuote(object $client, array $overrides = []): object
+    protected function seedQuote(int $clientId, array $overrides = []): object
     {
         $urlKey = bin2hex(random_bytes(16));
         $id = $this->databaseInsert('ip_quotes', array_merge([
-            'client_id'            => $client->client_id,
+            'client_id'            => $clientId,
             'quote_number'         => 'QT-' . bin2hex(random_bytes(3)),
             'quote_status_id'      => 1,
             'quote_total'          => '500.00',

@@ -13,13 +13,42 @@ require_once dirname(__DIR__, 3) . '/application/modules/supplier_invoices/libra
 final class SupplierInvoiceAccessTest extends TestCase
 {
     #[Test]
-    public function it_allows_supplier_invoice_access_only_to_administrators(): void
+    public function administrators_can_read_supplier_invoices(): void
     {
+        /* Arrange */
         $access = new SupplierInvoiceAccess();
 
+        /* Act & Assert */
         self::assertTrue($access->canRead(SupplierInvoiceAccess::ADMINISTRATOR));
+    }
+
+    #[Test]
+    public function administrators_can_manage_supplier_invoice_payments(): void
+    {
+        /* Arrange */
+        $access = new SupplierInvoiceAccess();
+
+        /* Act & Assert */
         self::assertTrue($access->canManagePayments(SupplierInvoiceAccess::ADMINISTRATOR));
+    }
+
+    #[Test]
+    public function non_administrators_cannot_read_supplier_invoices(): void
+    {
+        /* Arrange */
+        $access = new SupplierInvoiceAccess();
+
+        /* Act & Assert */
         self::assertFalse($access->canRead(2));
+    }
+
+    #[Test]
+    public function non_administrators_cannot_manage_supplier_invoice_attachments(): void
+    {
+        /* Arrange */
+        $access = new SupplierInvoiceAccess();
+
+        /* Act & Assert */
         self::assertFalse($access->canManageAttachments(2));
     }
 }
